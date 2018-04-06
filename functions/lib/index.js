@@ -9,23 +9,23 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const firebase = require("firebase-functions");
-const node_fetch_1 = require("node-fetch");
-const dotenv = require("dotenv");
-dotenv.config();
+const request = require("request-promise-native");
 exports.handlePullRequest = firebase.https.onRequest((req, res) => __awaiter(this, void 0, void 0, function* () {
-    let { action, pull_request } = JSON.parse(req.body.payload);
+    let { action, pull_request, repository } = JSON.parse(req.body.payload);
     if (action !== "opened") {
         res.send("Not creating a pull request");
         return;
     }
     let github_api_key = firebase.config().app.github_api_key;
-    let headers = { Authorization: `Bearer ${github_api_key}` };
-    let issueBody = `
-    query { 
-      viewer { 
-        organization(login: "Atlantic57") {
-          repository(name: "a57-hugo") {
-            issues(labels: ["QA"], first: 50) {
+    let headers = {
+        Authorization: `Bearer ${github_api_key}`,
+        "User-Agent": "rbvea"
+    };
+    let query = `query {
+       viewer { 
+        organization(login: \"Atlantic57\") {
+          repository(name: \"${repository.name}\") {
+            issues(labels: [\"QA\"], first: 50) {
               nodes {
                 title
                 number
@@ -35,25 +35,45 @@ exports.handlePullRequest = firebase.https.onRequest((req, res) => __awaiter(thi
         }
       }
     }`;
-    let issuesRes = yield node_fetch_1.default("https://api.github.com/graphql", {
-        headers,
-        issueBody
-    });
-    let issues = issuesRes.json();
-    let pullRequestBody = issues.data.viewer.organization.repository.issues.nodes
-        .map(({ title, number }) => {
-        return `${title} [#${number}]`;
-    })
-        .join("\n");
-    let updateRes = yield node_fetch_1.default(`https://api.github.com/repos/${pull_request.repository.full_name}/pulls/${pull_request.number}`, {
-        method: "PATCH",
-        headers,
-        body: pullRequestBody
-    });
-    if (updateRes.ok) {
-        res.send("Success!");
-        return;
+    query = query.replace(/\n/g, "");
+    try {
+        let issuesRes = yield request.post({
+            url: "https://api.github.com/graphql",
+            json: true,
+            headers,
+            body: {
+                query
+            }
+        });
+        let { issues } = issuesRes.data.viewer.organization.repository;
+        let pullRequestBody = issues.nodes
+            .map(({ title, number }) => {
+            return `* ${title} [#${number}]`;
+        })
+            .join("\n");
+        let messageBody = [
+            pull_request.body,
+            "### Issues addressed",
+            pullRequestBody
+        ].join("\n");
+        let uri = `https://api.github.com/repos/${repository.full_name}/pulls/${pull_request.number}`;
+        let updateRes = yield request.post({
+            uri,
+            method: "PATCH",
+            headers,
+            json: true,
+            body: {
+                body: messageBody
+            }
+        });
+        if (updateRes.body) {
+            res.send("Success!");
+            return;
+        }
+        res.send("An error occurred");
     }
-    res.send("An error occurred");
+    catch (e) {
+        res.json(e);
+    }
 }));
 //# sourceMappingURL=index.js.map
